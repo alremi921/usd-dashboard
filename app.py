@@ -103,11 +103,13 @@ import pandas as pd
 import plotly.express as px
 import yfinance as yf
 import streamlit as st
+from datetime import datetime, timedelta
+
 
 # =====================================================
-# 1️⃣   ECONOMIC CALENDAR (Investing.com, HIGH IMPACT ONLY)
+# 1️⃣   USD HIGH-IMPACT NEWS — LAST 30 DAYS
 # =====================================================
-def fetch_usd_high_impact():
+def fetch_usd_high_impact_last_month():
     url = "https://www.investing.com/economic-calendar/"
     headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -117,26 +119,38 @@ def fetch_usd_high_impact():
     rows = soup.select("tr.js-event-item")
 
     dataset = []
+    today = datetime.utcnow()
+    month_ago = today - timedelta(days=30)
 
     for row in rows:
         try:
             currency = row.get("data-event-currency")
-            impact = row.get("data-impact")  # 1 = low, 2 = medium, 3 = high
-
-            if currency != "USD" or impact != "3":
-                continue
-
+            impact = row.get("data-impact")     # 3 = high impact
+            time_str = row.get("data-release-time")  # timestamp
             title = row.get("data-event-title")
             actual = row.get("data-event-actual")
             forecast = row.get("data-event-forecast")
 
+            # Only USD, only high impact
+            if currency != "USD" or impact != "3":
+                continue
+
+            # Check valid date
+            if not time_str:
+                continue
+            timestamp = int(time_str)
+            date = datetime.utcfromtimestamp(timestamp)
+
+            if date < month_ago:
+                continue
+
+            # Skip non-numeric data
             if not actual or not forecast or actual == "-" or forecast == "-":
                 continue
 
-            # convert values
+            # convert strings → float
             def to_float(x):
-                x = x.replace(",", "").replace("%", "")
-                return float(x)
+                return float(x.replace(",", "").replace("%", ""))
 
             a = to_float(actual)
             f = to_float(forecast)
@@ -150,20 +164,22 @@ def fetch_usd_high_impact():
                 signal = 0
 
             dataset.append({
+                "Date": date.strftime("%Y-%m-%d"),
                 "Report": title,
                 "Actual": actual,
                 "Forecast": forecast,
-                "Impact": "High",
                 "Signal": signal
             })
         except:
             continue
 
-    return pd.DataFrame(dataset)
+    df = pd.DataFrame(dataset)
+    df = df.sort_values("Date", ascending=False)
+    return df
 
 
 # =====================================================
-# 2️⃣   SEASONALITY (20Y DXY)
+# 2️⃣   SEASONALITY — DXY last 20 years
 # =====================================================
 def get_seasonality():
     df = yf.Ticker("DX-Y.NYB").history(period="20y")
@@ -171,7 +187,7 @@ def get_seasonality():
     df["Return"] = df["Close"].pct_change()
 
     out = df.groupby("Month")["Return"].mean().reset_index()
-    out["Return"] = out["Return"] * 100
+    out["Return"] = out["Return"] * 100  # convert to %
 
     out["Month"] = out["Month"].map({
         1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
@@ -182,22 +198,25 @@ def get_seasonality():
 
 
 # =====================================================
-# 3️⃣   STREAMLIT SECTION — INSERT HERE INTO MAIN APP
+# 3️⃣ STREAMLIT SECTION — DISPLAY
 # =====================================================
 
-st.header("📰 High-Impact Fundamenty (USD)")
+# -------- FUNDAMENTS TABLE ----------
+st.header("📰 USD High-Impact Fundamenty — Posledních 30 dní")
 
-cal = fetch_usd_high_impact()
+cal = fetch_usd_high_impact_last_month()
 
 if cal.empty:
-    st.warning("⚠️ Žádné USD high-impact zprávy dnes zatím nejsou.")
+    st.warning("⚠️ Za poslední měsíc nejsou dostupné žádné USD high-impact reporty.")
 else:
     st.dataframe(cal, use_container_width=True)
+
+    # Total sentiment
     total_score = cal["Signal"].sum()
-    st.subheader(f"📊 Celkové fundamentální skóre USD: **{total_score}**")
+    st.subheader(f"📊 Celkové fundamentální skóre (30 dní): **{total_score}**")
 
 
-# Seasonality chart
+# -------- SEASONALITY ----------
 st.header("📈 USD Seasonality — 20 Year Pattern")
 
 season = get_seasonality()
@@ -205,7 +224,7 @@ fig = px.bar(
     season,
     x="Month",
     y="Return",
-    title="DXY Seasonality (% avg return per month, 20 years)",
+    title="DXY Seasonality (% průměrná měsíční výkonnost, 20 let)",
     color="Return",
     color_continuous_scale="Bluered"
 )
