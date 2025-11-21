@@ -99,138 +99,131 @@ with col2:
 # ========= PLACE FOR FUNDAMENTS + SEASONALITY =========
 import streamlit as st
 import pandas as pd
+import requests
 import yfinance as yf
 import plotly.express as px
-import requests
 from datetime import datetime, timedelta
 
 
-# =====================================================
-# 1️⃣   EconDB API – HIGH IMPACT USD NEWS (last 30 days)
-# =====================================================
+# ============================================================
+# 1️⃣ HIGH-IMPACT USD FUNDAMENTS — FMP Economic Calendar API
+# ============================================================
+
+API_KEY = "demo"
 
 def fetch_usd_high_impact_last_month():
     """
-    Fetches last 30 days of USD macroeconomic high-impact reports
-    using EconDB API (stable, reliable, JSON-based).
+    Fetch real USD high-impact economic events for last 30 days
+    using FinancialModelingPrep economic calendar API.
     """
-
-    # List of major high-impact USD indicators
-    high_impact_series = {
-        "NFP": "NFP",
-        "CPI": "CPI",
-        "Core CPI": "CPIC",
-        "PCE": "PCEPI",
-        "Core PCE": "PCEPI_CORE",
-        "Retail Sales": "RS",
-        "ISM Manufacturing PMI": "ISM_MAN",
-        "ISM Services PMI": "ISM_SERV",
-        "Unemployment Rate": "UNRATE",
-        "GDP QoQ": "GDP_USA"
-    }
 
     end = datetime.utcnow()
     start = end - timedelta(days=30)
 
-    all_rows = []
+    url = (
+        f"https://financialmodelingprep.com/api/v3/economic_calendar"
+        f"?from={start.strftime('%Y-%m-%d')}"
+        f"&to={end.strftime('%Y-%m-%d')}"
+        f"&apikey={API_KEY}"
+    )
 
-    for name, series_code in high_impact_series.items():
-        url = f"https://www.econdb.com/api/series/{series_code}/?format=json"
-        r = requests.get(url)
-        if r.status_code != 200:
-            continue
-
-        data = r.json()
-
-        dates = data["data"]["dates"]
-        values = data["data"]["values"]
-
-        # Build dataframe
-        df = pd.DataFrame({"Date": dates, "Actual": values})
-        df["Date"] = pd.to_datetime(df["Date"])
-
-        # Filter last 30 days
-        df = df[df["Date"].between(start, end)]
-
-        if df.empty:
-            continue
-
-        # Create signals (we need forecast from EconDB → proxy: compare to previous)
-        df = df.sort_values("Date")
-        df["Forecast"] = df["Actual"].shift(1)
-        df = df.dropna()
-
-        # Signal = actual vs forecast
-        df["Signal"] = df.apply(
-            lambda row: 1 if row["Actual"] > row["Forecast"]
-            else -1 if row["Actual"] < row["Forecast"]
-            else 0,
-            axis=1
-        )
-
-        df["Report"] = name
-
-        all_rows.append(df)
-
-    if not all_rows:
+    r = requests.get(url)
+    if r.status_code != 200:
         return pd.DataFrame()
 
-    final = pd.concat(all_rows, ignore_index=True)
-    final["Date"] = final["Date"].dt.strftime("%Y-%m-%d")
-    final = final.sort_values("Date", ascending=False)
+    events = r.json()
 
-    return final[["Date", "Report", "Actual", "Forecast", "Signal"]]
+    rows = []
+    for e in events:
+        if (
+            e.get("country") == "US"
+            and e.get("impact") == "High"
+            and e.get("actual") is not None
+            and e.get("estimate") is not None
+        ):
+            actual = e["actual"]
+            forecast = e["estimate"]
+
+            # sentiment +1 / 0 / -1
+            if actual > forecast:
+                signal = 1
+            elif actual < forecast:
+                signal = -1
+            else:
+                signal = 0
+
+            rows.append({
+                "Date": e.get("date", "")[:10],
+                "Report": e.get("event", ""),
+                "Actual": actual,
+                "Forecast": forecast,
+                "Previous": e.get("previous", None),
+                "Impact": e.get("impact", ""),
+                "Signal": signal
+            })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df = df.sort_values("Date", ascending=False)
+
+    return df
 
 
-# =====================================================
-# 2️⃣   SEASONALITY (unchanged)
-# =====================================================
+# ============================================================
+# 2️⃣ USD SEASONALITY – 20-YEAR AVERAGE (DXY)
+# ============================================================
 
-def get_seasonality():
+def get_usd_seasonality():
     df = yf.Ticker("DX-Y.NYB").history(period="20y")
     df["Month"] = df.index.month
     df["Return"] = df["Close"].pct_change()
+    grouped = df.groupby("Month")["Return"].mean().reset_index()
+    grouped["Return"] = grouped["Return"] * 100
 
-    out = df.groupby("Month")["Return"].mean().reset_index()
-    out["Return"] = out["Return"] * 100
-
-    out["Month"] = out["Month"].map({
+    grouped["Month"] = grouped["Month"].map({
         1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
         7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"
     })
 
-    return out
+    return grouped
 
 
-# =====================================================
-# 3️⃣ STREAMLIT SECTION
-# =====================================================
+# ============================================================
+# 3️⃣ STREAMLIT – FUNDAMENTS SECTION
+# ============================================================
 
-st.header("📰 USD High-Impact Fundamenty — Posledních 30 dní (EconDB)")
+st.header("📰 High-Impact Fundamenty (USD) — Posledních 30 dní")
 
 cal = fetch_usd_high_impact_last_month()
 
 if cal.empty:
-    st.warning("⚠️ Za posledních 30 dní nejsou žádná dostupná high-impact USD data.")
+    st.warning("⚠️ Za posledních 30 dní nejsou dostupné žádné high-impact USD reporty.")
 else:
     st.dataframe(cal, use_container_width=True)
-    total_score = cal["Signal"].sum()
-    st.subheader(f"📊 Celkové fundamentální skóre (30 dní): **{total_score}**")
+
+    score = cal["Signal"].sum()
+    st.subheader(f"📊 Celkové fundamentální skóre: **{score}**")
 
 
+# ============================================================
+# 4️⃣ STREAMLIT – USD SEASONALITY
+# ============================================================
 
-# SEASONALITY SECTION
-st.header("📈 USD Seasonality — 20 Year Pattern")
+st.header("📈 USD Seasonality — 20letý průměr")
 
-season = get_seasonality()
+season = get_usd_seasonality()
+
 fig = px.bar(
     season,
     x="Month",
     y="Return",
-    title="DXY Seasonality (% průměrný měsíční výnos, 20 let)",
+    title="DXY Seasonality (% měsíční průměr za 20 let)",
     color="Return",
     color_continuous_scale="Bluered"
 )
+
 st.plotly_chart(fig, use_container_width=True)
 
 # FOOTER
