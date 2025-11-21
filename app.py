@@ -103,18 +103,26 @@ import requests
 import yfinance as yf
 import plotly.express as px
 from datetime import datetime, timedelta
-from streamlit_autorefresh import st_autorefresh
+import time
 
 
 # ============================================================
-# 🔄  AUTO REFRESH (každých 90 minut)
+# 🔄  AUTO REFRESH (90 minut – bez externích knihoven)
 # ============================================================
 
-st_autorefresh(interval=90 * 60 * 1000, key="datarefresh")
+REFRESH_INTERVAL = 90 * 60   # 90 min
+current_ts = int(time.time())
+
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = current_ts
+
+if current_ts - st.session_state.last_refresh > REFRESH_INTERVAL:
+    st.session_state.last_refresh = current_ts
+    st.experimental_rerun()
 
 
 # ============================================================
-# 1️⃣ FUNDAMENTY – FMP Economic Calendar (all USD reports)
+# 1️⃣ FUNDAMENTY – FMP Economic Calendar (USD reports)
 # ============================================================
 
 API_KEY = "demo"
@@ -138,30 +146,36 @@ def fetch_usd_reports_last_month():
     rows = []
 
     for e in events:
-        if (
-            e.get("country") == "US"
-            and e.get("actual") is not None
-            and e.get("estimate") is not None
-        ):
-            actual = e["actual"]
-            forecast = e["estimate"]
+        if e.get("country") != "US":
+            continue
+        
+        actual = e.get("actual")
+        forecast = e.get("estimate")
+        previous = e.get("previous")
 
-            # sentiment
-            if actual > forecast:
-                signal = 1
-            elif actual < forecast:
-                signal = -1
-            else:
-                signal = 0
+        # Forecast není v API → doplníme previous
+        if forecast is None:
+            forecast = previous
 
-            rows.append({
-                "Date": e.get("date", "")[:10],
-                "Report": e.get("event", ""),
-                "Actual": actual,
-                "Forecast": forecast,
-                "Previous": e.get("previous", None),
-                "Signal": signal
-            })
+        if actual is None or forecast is None:
+            continue
+
+        # sentiment výpočet
+        if actual > forecast:
+            signal = 1
+        elif actual < forecast:
+            signal = -1
+        else:
+            signal = 0
+
+        rows.append({
+            "Date": e.get("date", "")[:10],
+            "Report": e.get("event", ""),
+            "Actual": actual,
+            "Forecast": forecast,
+            "Previous": previous,
+            "Signal": signal
+        })
 
     if not rows:
         return pd.DataFrame()
@@ -172,31 +186,40 @@ def fetch_usd_reports_last_month():
 
 
 # ============================================================
-# 2️⃣ SEASONALITY FUNCTION – DXY, GOLD, SP500
+# 2️⃣ SPRÁVNÁ SEASONALITY – průměr měsíčních výkonů za 20 let
 # ============================================================
 
-def get_seasonality(symbol, years=20):
+def get_seasonality_proper(symbol, years=20):
     df = yf.Ticker(symbol).history(period=f"{years}y")
 
     if df.empty:
         return pd.DataFrame()
 
+    df["Year"] = df.index.year
     df["Month"] = df.index.month
-    df["Return"] = df["Close"].pct_change()
 
-    s = df.groupby("Month")["Return"].mean().reset_index()
-    s["Return"] = s["Return"] * 100
+    # poslední close každý měsíc
+    monthly = df["Close"].groupby([df["Year"], df["Month"]]).last().reset_index()
 
-    s["Month"] = s["Month"].map({
+    # měsíční změna
+    monthly["Return"] = monthly.groupby("Year")["Close"].pct_change() * 100
+
+    # odstranit první měsíc roku (nemá předchozí hodnotu)
+    monthly = monthly.dropna()
+
+    # 20letý průměr pro každý měsíc
+    season = monthly.groupby("Month")["Return"].mean().reset_index()
+
+    season["Month"] = season["Month"].map({
         1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
         7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"
     })
 
-    return s
+    return season
 
 
 # ============================================================
-# STREAMLIT SECTION – FUNDAMENTÁLNÍ PŘEHLED
+# 3️⃣ STREAMLIT — USD FUNDAMENTY
 # ============================================================
 
 st.header("📰 USD Makro Fundamenty — Posledních 30 dní")
@@ -212,54 +235,45 @@ else:
         column_config={
             "Signal": st.column_config.NumberColumn(
                 "Signal",
-                help="+1 bullish, 0 neutral, -1 bearish",
+                help="Bullish = +1, Neutral = 0, Bearish = -1",
                 format="%d"
             )
         }
     )
+
     score = cal["Signal"].sum()
     st.subheader(f"📊 Celkové fundamentální skóre: **{score}**")
 
 
 # ============================================================
-# STREAMLIT – SEASONALITY (DXY, GOLD, SP500)
+# 4️⃣ STREAMLIT — SEASONALITY (DXY, Gold, S&P500)
 # ============================================================
 
-st.header("📈 USD, Gold & S&P 500 Seasonality (20 let)")
-
+st.header("📈 Seasonality — 20letá průměrná měsíční výkonnost")
 
 # --- DXY ---
-dxy = get_seasonality("DX-Y.NYB")
-fig_dxy = px.bar(
-    dxy, x="Month", y="Return",
-    title="DXY Seasonality (20 let)",
-    color="Return",
-    color_continuous_scale="Bluered"
+dxy = get_seasonality_proper("DX-Y.NYB")
+fig_dxy = px.line(
+    dxy, x="Month", y="Return", markers=True,
+    title="DXY Seasonality (20 let – správný výpočet)",
 )
 st.plotly_chart(fig_dxy, use_container_width=True)
 
-
-# --- GOLD (XAUUSD) ---
-gold = get_seasonality("GC=F")
-fig_gold = px.bar(
-    gold, x="Month", y="Return",
-    title="Gold Seasonality (20 let)",
-    color="Return",
-    color_continuous_scale="Sunset"
+# --- GOLD ---
+gold = get_seasonality_proper("GC=F")
+fig_gold = px.line(
+    gold, x="Month", y="Return", markers=True,
+    title="Gold Seasonality (20 let – správný výpočet)",
 )
 st.plotly_chart(fig_gold, use_container_width=True)
 
-
-# --- S&P 500 ---
-spx = get_seasonality("^GSPC")
-fig_spx = px.bar(
-    spx, x="Month", y="Return",
-    title="S&P 500 Seasonality (20 let)",
-    color="Return",
-    color_continuous_scale="Viridis"
+# --- S&P500 ---
+spx = get_seasonality_proper("^GSPC")
+fig_spx = px.line(
+    spx, x="Month", y="Return", markers=True,
+    title="S&P 500 Seasonality (20 let – správný výpočet)",
 )
 st.plotly_chart(fig_spx, use_container_width=True)
-
 
 # FOOTER
 st.caption("Dashboard v.2.0 — Base version (bez fundamentů)")
