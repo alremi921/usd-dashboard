@@ -1,4 +1,7 @@
-streamlit>=1.20
-yfinance>=0.2.4
+yfinance
 pandas
-numpy
+requests
+beautifulsoup4
+lxml
+plotly
+
