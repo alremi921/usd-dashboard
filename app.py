@@ -103,20 +103,23 @@ import requests
 import yfinance as yf
 import plotly.express as px
 from datetime import datetime, timedelta
+from streamlit_autorefresh import st_autorefresh
 
 
 # ============================================================
-# 1️⃣ HIGH-IMPACT USD FUNDAMENTS — FMP Economic Calendar API
+# 🔄  AUTO REFRESH (každých 90 minut)
+# ============================================================
+
+st_autorefresh(interval=90 * 60 * 1000, key="datarefresh")
+
+
+# ============================================================
+# 1️⃣ FUNDAMENTY – FMP Economic Calendar (all USD reports)
 # ============================================================
 
 API_KEY = "demo"
 
-def fetch_usd_high_impact_last_month():
-    """
-    Fetch real USD high-impact economic events for last 30 days
-    using FinancialModelingPrep economic calendar API.
-    """
-
+def fetch_usd_reports_last_month():
     end = datetime.utcnow()
     start = end - timedelta(days=30)
 
@@ -132,19 +135,18 @@ def fetch_usd_high_impact_last_month():
         return pd.DataFrame()
 
     events = r.json()
-
     rows = []
+
     for e in events:
         if (
             e.get("country") == "US"
-            and e.get("impact") == "High"
             and e.get("actual") is not None
             and e.get("estimate") is not None
         ):
             actual = e["actual"]
             forecast = e["estimate"]
 
-            # sentiment +1 / 0 / -1
+            # sentiment
             if actual > forecast:
                 signal = 1
             elif actual < forecast:
@@ -158,7 +160,6 @@ def fetch_usd_high_impact_last_month():
                 "Actual": actual,
                 "Forecast": forecast,
                 "Previous": e.get("previous", None),
-                "Impact": e.get("impact", ""),
                 "Signal": signal
             })
 
@@ -167,64 +168,98 @@ def fetch_usd_high_impact_last_month():
 
     df = pd.DataFrame(rows)
     df = df.sort_values("Date", ascending=False)
-
     return df
 
 
 # ============================================================
-# 2️⃣ USD SEASONALITY – 20-YEAR AVERAGE (DXY)
+# 2️⃣ SEASONALITY FUNCTION – DXY, GOLD, SP500
 # ============================================================
 
-def get_usd_seasonality():
-    df = yf.Ticker("DX-Y.NYB").history(period="20y")
+def get_seasonality(symbol, years=20):
+    df = yf.Ticker(symbol).history(period=f"{years}y")
+
+    if df.empty:
+        return pd.DataFrame()
+
     df["Month"] = df.index.month
     df["Return"] = df["Close"].pct_change()
-    grouped = df.groupby("Month")["Return"].mean().reset_index()
-    grouped["Return"] = grouped["Return"] * 100
 
-    grouped["Month"] = grouped["Month"].map({
+    s = df.groupby("Month")["Return"].mean().reset_index()
+    s["Return"] = s["Return"] * 100
+
+    s["Month"] = s["Month"].map({
         1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
         7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"
     })
 
-    return grouped
+    return s
 
 
 # ============================================================
-# 3️⃣ STREAMLIT – FUNDAMENTS SECTION
+# STREAMLIT SECTION – FUNDAMENTÁLNÍ PŘEHLED
 # ============================================================
 
-st.header("📰 High-Impact Fundamenty (USD) — Posledních 30 dní")
+st.header("📰 USD Makro Fundamenty — Posledních 30 dní")
 
-cal = fetch_usd_high_impact_last_month()
+cal = fetch_usd_reports_last_month()
 
 if cal.empty:
-    st.warning("⚠️ Za posledních 30 dní nejsou dostupné žádné high-impact USD reporty.")
+    st.warning("⚠️ Žádná makro data za posledních 30 dní nejsou k dispozici.")
 else:
-    st.dataframe(cal, use_container_width=True)
-
+    st.dataframe(
+        cal,
+        use_container_width=True,
+        column_config={
+            "Signal": st.column_config.NumberColumn(
+                "Signal",
+                help="+1 bullish, 0 neutral, -1 bearish",
+                format="%d"
+            )
+        }
+    )
     score = cal["Signal"].sum()
     st.subheader(f"📊 Celkové fundamentální skóre: **{score}**")
 
 
 # ============================================================
-# 4️⃣ STREAMLIT – USD SEASONALITY
+# STREAMLIT – SEASONALITY (DXY, GOLD, SP500)
 # ============================================================
 
-st.header("📈 USD Seasonality — 20letý průměr")
+st.header("📈 USD, Gold & S&P 500 Seasonality (20 let)")
 
-season = get_usd_seasonality()
 
-fig = px.bar(
-    season,
-    x="Month",
-    y="Return",
-    title="DXY Seasonality (% měsíční průměr za 20 let)",
+# --- DXY ---
+dxy = get_seasonality("DX-Y.NYB")
+fig_dxy = px.bar(
+    dxy, x="Month", y="Return",
+    title="DXY Seasonality (20 let)",
     color="Return",
     color_continuous_scale="Bluered"
 )
+st.plotly_chart(fig_dxy, use_container_width=True)
 
-st.plotly_chart(fig, use_container_width=True)
+
+# --- GOLD (XAUUSD) ---
+gold = get_seasonality("GC=F")
+fig_gold = px.bar(
+    gold, x="Month", y="Return",
+    title="Gold Seasonality (20 let)",
+    color="Return",
+    color_continuous_scale="Sunset"
+)
+st.plotly_chart(fig_gold, use_container_width=True)
+
+
+# --- S&P 500 ---
+spx = get_seasonality("^GSPC")
+fig_spx = px.bar(
+    spx, x="Month", y="Return",
+    title="S&P 500 Seasonality (20 let)",
+    color="Return",
+    color_continuous_scale="Viridis"
+)
+st.plotly_chart(fig_spx, use_container_width=True)
+
 
 # FOOTER
 st.caption("Dashboard v.2.0 — Base version (bez fundamentů)")
