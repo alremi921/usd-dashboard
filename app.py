@@ -6,15 +6,16 @@ import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import plotly.express as px
+import random # pro simulaci seasonality
 
 st.set_page_config(page_title="USD Macro AI Dashboard", layout="wide")
-st.title("💵 USD Macro AI Dashboard — Category Scoring (last 6 months)")
+st.title("💵 USD Macro AI Dashboard — Category Scoring (last 3 months)")
 
 # -------------------------
 # CONFIG
 # -------------------------
-# how far back (days)
-LOOKBACK_DAYS = 180  # ~6 months
+# how far back (days) - ZMĚNA na 90 dní (3 měsíce)
+LOOKBACK_DAYS = 90
 TODAY = datetime.utcnow()
 START_DATE = TODAY - timedelta(days=LOOKBACK_DAYS)
 
@@ -56,6 +57,10 @@ def clean_num(x):
     if x is None:
         return None
     s = str(x).strip()
+    # OČISTNÁ ZMĚNA: Odstranění nežádoucího symbolu bodu (tečky) před datem, pokud se v datech objeví (často to je tečka na začátku)
+    if s.startswith('.'):
+         s = s[1:]
+    
     if s == "" or s == "-" or s.lower() == "n/a":
         return None
     # remove % and commas
@@ -68,7 +73,7 @@ def clean_num(x):
 # Try to fetch weekly JSON (current week) — also will be used as fallback multiple times
 def fetch_json(url):
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, timeout=20) # ZVÝŠENÍ TIMEOUTU
         if r.status_code == 200:
             return r.json()
     except Exception:
@@ -78,7 +83,7 @@ def fetch_json(url):
 # Fetch XML and parse events
 def fetch_xml(url):
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, timeout=20) # ZVÝŠENÍ TIMEOUTU
         if r.status_code == 200:
             return r.text
     except Exception:
@@ -125,6 +130,13 @@ def parse_faireconomy_xml(xml_text):
     if not xml_text:
         return rows
     try:
+        # PŘIDÁNO: Zkusit odstranit nečisté znaky před <root> nebo <events> (někdy vrací API garbage)
+        xml_text = xml_text.strip()
+        if not xml_text.startswith('<'):
+            xml_text = '<root>' + xml_text.split('<', 1)[1] if '<' in xml_text else xml_text
+            if not xml_text.endswith('>'):
+                 xml_text += '</root>'
+
         root = ET.fromstring(xml_text)
     except Exception:
         return rows
@@ -146,6 +158,9 @@ def parse_faireconomy_xml(xml_text):
             # sometimes <time> is like "2025-11-22 14:30:00"
             dt_str = None
             if date_text:
+                # ZMĚNA: Odstranění tečky na začátku, pokud tam je
+                if date_text.startswith('.'):
+                    date_text = date_text[1:]
                 try:
                     dt = pd.to_datetime(date_text)
                     dt_str = dt.strftime("%Y-%m-%d %H:%M")
@@ -176,7 +191,7 @@ def parse_faireconomy_xml(xml_text):
             continue
     return rows
 
-# Collect events from multiple sources for the last 6 months (weekly crawl)
+# Collect events from multiple sources for the last 3 months (weekly crawl)
 def collect_events_6mo():
     all_rows = []
 
@@ -194,12 +209,11 @@ def collect_events_6mo():
             rows = parse_faireconomy_xml(xml_text)
             all_rows.extend(rows)
 
-    # 3) As a robust attempt: iterate backward weekly and try to fetch weekly JSON by passing date param (many installations support ?date=YYYY-MM-DD)
-    # We'll attempt for up to 26 weeks
-    weeks = 26
+    # 3) As a robust attempt: iterate backward weekly and try to fetch weekly JSON by passing date param (we'll attempt for up to 13 weeks)
+    weeks = 13 # 3 měsíce ~ 13 týdnů
     for w in range(weeks):
         target = TODAY - timedelta(weeks=w)
-        # try a few URL templates (some servers accept ?date=YYYY-MM-DD or ?date=M.YYYY)
+        # try a few URL templates
         templates = [
             f"https://nfs.faireconomy.media/ff_calendar_thisweek.json?date={target.strftime('%Y-%m-%d')}",
             f"https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json?date={target.strftime('%Y-%m-%d')}",
@@ -208,7 +222,6 @@ def collect_events_6mo():
         ]
         got_any = False
         for t in templates:
-            # small optimization: skip JSON templates if we already have many items
             try:
                 if t.endswith(".json") or ".json?" in t:
                     j = fetch_json(t)
@@ -226,7 +239,6 @@ def collect_events_6mo():
                             got_any = True
             except Exception:
                 continue
-        # optional: break if we gather plenty (not necessary)
     # deduplicate by Report + Date
     df = pd.DataFrame(all_rows)
     if df.empty:
@@ -245,7 +257,7 @@ def score_event(row):
     a = clean_num(row.get("Actual"))
     f = clean_num(row.get("Forecast"))
     if a is None or f is None:
-        return 0  # neutral if missing data
+        return 0  # neutral if missing data (PROBLEM)
     if a > f:
         return 1
     if a < f:
@@ -257,8 +269,6 @@ def evaluate_category(df_cat):
     # sum points
     total = int(df_cat["Points"].sum())
     # return classification per user's rule:
-    # >2 bullish, 1/0/-1 neutral, <-2 bearish -> but user text said: "a teď >2=bullish pro dolar, 1,0,-1=neutrální pro dolar, <-2=bearish pro dolar"
-    # Map:
     if total > 2:
         label = "Bullish"
     elif total < -2:
@@ -267,19 +277,77 @@ def evaluate_category(df_cat):
         label = "Neutral"
     return total, label
 
+# NOVÁ FUNKCE: AI-style vyhodnocení
+def generate_ai_summary(summary_df, final_score, overall_label):
+    summary = f"Celkové fundamentální skóre pro USD za poslední 3 měsíce je **{final_score:+d}**, což vyúsťuje v **{overall_label}** sentiment. "
+    
+    # Seřazení kategorií podle skóre
+    sorted_summary = summary_df.sort_values("Total Points", ascending=False)
+    
+    # 1. Největší vliv (nejpozitivnější)
+    best_cat = sorted_summary.iloc[0]
+    if best_cat['Total Points'] > 0:
+        summary += f"Nejsilnější pozitivní vliv na USD má kategorie **{best_cat['Category']}** s výsledkem **{best_cat['Total Points']:+d} bodů** ({best_cat['Events Count']} událostí). To značí, že makrodata z této oblasti (např. {best_cat['Category'].lower()} zprávy) překonala očekávání trhu. "
+    
+    # 2. Nejslabší vliv (nejnegativnější)
+    worst_cat = sorted_summary.iloc[-1]
+    if worst_cat['Total Points'] < 0:
+        summary += f"Negativně působí kategorie **{worst_cat['Category']}** se skóre **{worst_cat['Total Points']:+d} bodů** ({worst_cat['Events Count']} událostí). Zde aktuální výsledky zaostaly za konsenzem. "
+    
+    # 3. Neutrální nebo celková bilance
+    if overall_label == "Bullish pro USD":
+        summary += "Fundamentální býčí sentiment je tažen zejména silnými daty z klíčových oblastí, které převážily mírně negativní zprávy z jiných sektorů. "
+    elif overall_label == "Bearish pro USD":
+        summary += "Celková medvědí nálada je způsobena kumulací slabších výsledků napříč kategoriemi, což signalizuje zpomalení nebo překážky pro Fed/Ekonomiku. "
+    else: # Neutral
+        summary += "Celkový neutralní výsledek poukazuje na vyváženou situaci, kdy se pozitivní a negativní fundamenty navzájem vyrušily. Trh tak nemá jasný směr z makrodat. "
+
+    return summary
+
+# NOVÁ FUNKCE: Simulace seasonality pro vizualizaci
+def simulate_usd_seasonality():
+    # Simulace 10 let měsíčních dat - průměrné procentní změny USD Indexu (DXY)
+    # Tato data jsou SIMULOVANÁ, protože nemáme 10 let reálných dat.
+    months = ["Leden", "Únor", "Březen", "Duben", "Květen", "Červen", "Červenec", "Srpen", "Září", "Říjen", "Listopad", "Prosinec"]
+    
+    # Simulované typické chování (např. DXY bývá v září a prosinci silné, v lednu a srpnu slabé)
+    # Hodnoty v %
+    base_changes = {
+        "Leden": -0.8, "Únor": 0.2, "Březen": 0.4, "Duben": -0.6,
+        "Květen": 0.1, "Červen": 0.3, "Červenec": -0.4, "Srpen": -0.9,
+        "Září": 1.2, "Říjen": 0.5, "Listopad": 0.0, "Prosinec": 0.8
+    }
+    
+    # Přidání malého šumu pro realističtější simulaci
+    data = []
+    for month in months:
+        avg_change = base_changes[month]
+        # Simulace variability za 10 let
+        simulated_values = [avg_change + random.uniform(-0.5, 0.5) for _ in range(10)]
+        data.append({
+            "Měsíc": month,
+            "Průměrná Změna (%)": np.mean(simulated_values),
+            "Medián Změny (%)": np.median(simulated_values)
+        })
+        
+    df_season = pd.DataFrame(data)
+    # Zajištění pořadí měsíců pro graf
+    df_season['Měsíc'] = pd.Categorical(df_season['Měsíc'], categories=months, ordered=True)
+    df_season = df_season.sort_values("Měsíc")
+    return df_season
+
 # -------------------------
 # BUILD DASHBOARD
 # -------------------------
 st.header("Data fetch & processing")
-with st.spinner("Stahuji a zpracovávám ekonomické události (posledních ~6 měsíců)..."):
+with st.spinner(f"Stahuji a zpracovávám ekonomické události (posledních ~{LOOKBACK_DAYS} dní)..."):
     df_all = collect_events_6mo()
 
 if df_all.empty:
     st.error("Nepodařilo se stáhnout žádné události z ekonomického kalendáře. Zkus znovu nebo zkontroluj konektivitu.")
     st.stop()
 
-# Keep only high impact (impact >=3) OR try to include high impact synonyms
-# Some feeds use 3 for high, some use 'High' etc. We will filter by Impact>=3 OR 'impact' text contains 'High' in raw Report (already filtered by feed in many cases)
+# Keep only high impact (impact >=3)
 df_all["ImpactNum"] = pd.to_numeric(df_all["Impact"], errors="coerce").fillna(0).astype(int)
 # If ImpactNum is 0 but title contains 'high', treat as 3
 df_all.loc[(df_all["ImpactNum"] == 0) & (df_all["Report"].str.lower().str.contains("high")), "ImpactNum"] = 3
@@ -297,7 +365,7 @@ df_high["Points"] = df_high.apply(score_event, axis=1)
 df_high["DateDisplay"] = df_high["DateParsed"].dt.strftime("%Y-%m-%d %H:%M")
 
 # Show counts
-st.success(f"Nalezeno {len(df_high)} high-impact událostí v cílových kategoriích za posledních {LOOKBACK_DAYS} dní.")
+st.success(f"Nalezeno {len(df_high)} high-impact událostí v cílových kategoriích za posledních {LOOKBACK_DAYS} dní. Poznámka: Pokud je skóre 0, API pravděpodobně nevrátilo historickou hodnotu 'Actual'.")
 
 # -------------------------
 # Create per-category tables
@@ -362,6 +430,13 @@ st.table(summary_df.style.format({"Total Points":"{:+d}"}))
 # final row
 st.markdown(f"### 🔎 Celkové fundamentální skóre: **{final_score:+d}** — **{overall_label}**")
 
+# NOVÁ SEKCE: AI Vyhodnocení
+st.markdown("---")
+st.header("🤖 AI Fundamentální Vyhodnocení")
+ai_text = generate_ai_summary(summary_df, final_score, overall_label)
+st.info(ai_text)
+
+
 # -------------------------
 # Optional: timeline & viz
 # -------------------------
@@ -378,6 +453,21 @@ if not viz_agg.empty:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("Není dost dat pro graf.")
+    
+# NOVÁ SEKCE: Sezónnost USD
+st.markdown("---")
+st.header("📅 Sezónnost USD (Simulace za posledních 10 let)")
+st.caption("POZNÁMKA: Tato data jsou simulovaná, protože v rámci této aplikace nejsou dostupná reálná data DXY za 10 let. Slouží k demonstraci funkčnosti.")
+df_season = simulate_usd_seasonality()
+
+fig_season = px.bar(df_season, x="Měsíc", y="Průměrná Změna (%)", 
+                     title="Průměrná měsíční změna USD Indexu (Simulace)",
+                     color=np.where(df_season['Průměrná Změna (%)'] > 0, 'Pozitivní', 'Negativní'),
+                     color_discrete_map={'Pozitivní': 'green', 'Negativní': 'red'})
+
+fig_season.update_layout(showlegend=False)
+st.plotly_chart(fig_season, use_container_width=True)
+
 
 # -------------------------
 # Allow CSV export
@@ -390,12 +480,9 @@ st.markdown("Stáhni data pro další analýzu:")
 csv_all = df_high.sort_values("DateParsed", ascending=False)[
     ["DateDisplay","Category","Report","Actual","Forecast","Previous","Points"]
 ].rename(columns={"DateDisplay":"Date"})
-st.download_button("Download events CSV", csv_all.to_csv(index=False).encode("utf-8"), "usd_macro_events_6mo.csv", "text/csv")
+st.download_button("Download events CSV", csv_all.to_csv(index=False).encode("utf-8"), "usd_macro_events_90d.csv", "text/csv")
 
 # summary CSV
 st.download_button("Download summary CSV", summary_df.to_csv(index=False).encode("utf-8"), "usd_macro_summary.csv", "text/csv")
 
-st.success("Hotovo — dashboard vytvořen. Pokud chceš, můžu:")
-st.write("- přidat váhy pro jednotlivé kategorie (např. inflace = 2x),")
-st.write("- změnit pravidla pro přiřazení slov do kategorií, nebo")
-st.write("- přidat detailní AI-popis pro každou kategorii (styl GPT).")
+st.success("Hotovo — dashboard aktualizován. Zkus znovu spustit.")
