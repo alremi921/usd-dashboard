@@ -20,79 +20,12 @@ st.title("💵 USD Macro Dashboard – Professional Version")
 
 
 # ======================================================
-# ============= MODULE A: FUNDAMENTS ===================
-# ======================================================
-#  🔥 NOVÁ FUNKČNÍ VERZE – BERE DATA Z INVESTING CALENDAR .ICS
-#     Tento feed NIKDY NEBLOKUJE A VŽDY VRACÍ DATA
-
-def fetch_usd_macro_events():
-    url = "https://nfs.faireconomy.media/ff_calendar_thisweek.ics"
-
-    try:
-        resp = requests.get(url, timeout=10)
-    except:
-        return pd.DataFrame()
-
-    try:
-        cal = icalendar.Calendar.from_ical(resp.text)
-    except:
-        return pd.DataFrame()
-
-    rows = []
-
-    for component in cal.walk():
-        if component.name != "VEVENT":
-            continue
-
-        summary = str(component.get("SUMMARY", ""))
-        if "USD" not in summary and "United States" not in summary:
-            continue
-
-        try:
-            start = component.decoded("DTSTART")
-            date = pd.to_datetime(start).strftime("%Y-%m-%d %H:%M")
-        except:
-            date = None
-
-        actual = component.get("X-FX-ACTUAL")
-        forecast = component.get("X-FX-FORECAST")
-        previous = component.get("X-FX-PREVIOUS")
-
-        def clean(x):
-            if x is None: return None
-            try:
-                return float(str(x).replace("%", "").replace(",", ""))
-            except:
-                return None
-
-        a = clean(actual)
-        f = clean(forecast)
-
-        signal = 0
-        if a is not None and f is not None:
-            signal = 1 if a > f else -1 if a < f else 0
-
-        rows.append({
-            "Date": date,
-            "Report": summary,
-            "Actual": actual,
-            "Forecast": forecast,
-            "Previous": previous,
-            "Signal": signal
-        })
-
-    df = pd.DataFrame(rows)
-    return df
-
-
-# ======================================================
-# ============= MODULE A: FUNDAMENTS (NO ICALENDAR) =====
+# ============= MODULE A: FUNDAMENTS (NO ICALENDAR) ====
 # ======================================================
 
 def fetch_usd_macro_events():
     """
-    Fully functional Investing.com macro feed (no icalendar required).
-    Source: FairEconomy JSON mirror (always available).
+    FairEconomy JSON feed – 100% funkční, bez potřeby knihovny icalendar.
     """
     url = "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json"
 
@@ -104,7 +37,7 @@ def fetch_usd_macro_events():
     rows = []
 
     for ev in data.get("data", []):
-        # Filter only USD events + High Impact
+        # Filter USD + High impact
         if ev.get("country") != "United States":
             continue
         if ev.get("impact", 0) < 3:
@@ -118,9 +51,11 @@ def fetch_usd_macro_events():
 
         actual = ev.get("actual")
         forecast = ev.get("forecast")
+        previous = ev.get("previous")
 
         def clean(x):
-            if x in [None, "", "-"]: return None
+            if x in [None, "", "-"]: 
+                return None
             try:
                 return float(str(x).replace("%", "").replace(",", ""))
             except:
@@ -138,12 +73,72 @@ def fetch_usd_macro_events():
             "Report": ev.get("event"),
             "Actual": actual,
             "Forecast": forecast,
-            "Previous": ev.get("previous"),
+            "Previous": previous,
             "Signal": signal
         })
 
     df = pd.DataFrame(rows)
     return df
+
+
+# ======================================================
+# ============= DISPLAY FUNDAMENT SECTION ==============
+# ======================================================
+
+st.header("📰 USD Makro Fundamenty — High Impact (Realtime)")
+
+fund = fetch_usd_macro_events()
+
+if fund.empty:
+    st.warning("⚠️ Nepodařilo se načíst makro data.")
+else:
+    fund["Date"] = pd.to_datetime(fund["Date"])
+    fund = fund.sort_values("Date", ascending=False)
+
+    fund["Signal Label"] = fund["Signal"].map({
+        1: "🔺 +1 Bullish",
+        0: "⏺ 0 Neutral",
+        -1: "🔻 -1 Bearish"
+    })
+
+    st.dataframe(
+        fund[["Date", "Report", "Actual", "Forecast", "Previous", "Signal Label"]],
+        use_container_width=True
+    )
+
+    total_score = fund["Signal"].sum()
+    st.subheader(f"📊 Celkové fundamentální skóre: **{total_score}**")
+
+    # ==========================================
+    # AI SHRUTÍ FUNDAMENTŮ (lokální generátor)
+    # ==========================================
+    def ai_summarize_macro(df):
+        bullish = df[df["Signal"] == 1].shape[0]
+        bearish = df[df["Signal"] == -1].shape[0]
+        neutral = df[df["Signal"] == 0].shape[0]
+        last = df.iloc[0]["Report"]
+
+        tone = "bullish" if total_score > 0 else "bearish" if total_score < 0 else "neutral"
+
+        summary = f"""
+### 🤖 AI Shrnutí USD Fundamentů
+
+V posledních dnech byly publikovány klíčové americké makroekonomické indikátory.
+Celkový stav fundamentů pro USD je aktuálně **{tone.upper()}**.
+
+- Počet pozitivních překvapení: **{bullish}**
+- Počet negativních výsledků: **{bearish}**
+- Neutrální výsledky: **{neutral}**
+- Poslední publikovaný report: **{last}**
+
+Na základě celkového fundamentálního skóre **({total_score})** lze očekávat, že USD bude 
+v krátkodobém horizontu mít **{tone} momentum**, pokud nedojde k výrazné změně v nadcházejících datech.
+"""
+        return summary
+
+    st.markdown(ai_summarize_macro(fund))
+
+st.markdown("---")
 
 
 # ======================================================
@@ -166,8 +161,7 @@ with col1:
     dxy = fetch_symbol("DX-Y.NYB")
     if not dxy.empty:
         fig = px.line(
-            dxy,
-            y="Close",
+            dxy, y="Close",
             title="💵 DXY — Dollar Index (Daily Close)"
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -178,8 +172,7 @@ with col2:
     vix = fetch_symbol("^VIX")
     if not vix.empty:
         fig = px.line(
-            vix,
-            y="Close",
+            vix, y="Close",
             title="⚡ VIX — Volatility Index (Daily Close)"
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -189,19 +182,17 @@ with col2:
 st.markdown("---")
 
 
-
 # ======================================================
 # ============= MODULE C: SEASONALITY ==================
 # ======================================================
-# 🔥 NOVÁ KOMPLETNÍ SEASONALITA – FIX VŠECH BUGŮ, JANUARY SA VŽDY ZOBRAZÍ
 
 MONTH_MAP = {
-    1: "Jan", 2:"Feb", 3:"Mar", 4:"Apr", 5:"May", 6:"Jun",
-    7: "Jul", 8:"Aug", 9:"Sep",10:"Oct",11:"Nov",12:"Dec"
+    1: "Jan", 2:"Feb", 3:"Mar", 4:"Apr", 5:"May",
+    6:"Jun", 7:"Jul", 8:"Aug", 9:"Sep",
+    10:"Oct", 11:"Nov", 12:"Dec"
 }
 
-MONTH_ORDER = ["Jan","Feb","Mar","Apr","May","Jun",
-               "Jul","Aug","Sep","Oct","Nov","Dec"]
+MONTH_ORDER = list(MONTH_MAP.values())
 
 
 def seasonality_monthly(symbol, years=20):
@@ -214,20 +205,19 @@ def seasonality_monthly(symbol, years=20):
     df["Year"] = df.index.year
     df["Month"] = df.index.month
 
-    # ZÁVĚREČNÍ HODNOTA KAŽDÉHO MĚSÍCE
+    # monthly close
     monthly = df.groupby([df["Year"], df["Month"]])["Close"].last().reset_index()
 
-    # MEZI-MĚSÍČNÍ ZMĚNA V %
+    # month-to-month % change
     monthly["Return"] = monthly.groupby("Year")["Close"].pct_change() * 100
     monthly = monthly.dropna()
 
     monthly["MonthName"] = monthly["Month"].map(MONTH_MAP)
 
-    # AVERAGE SEASONALITY
     avg_month = (
         monthly.groupby("Month")["Return"]
         .mean()
-        .reindex(range(1,13))
+        .reindex(range(1, 13))
         .reset_index()
     )
 
@@ -238,7 +228,7 @@ def seasonality_monthly(symbol, years=20):
 
 def seasonality_heatmap(df):
     hm = df.pivot(index="Year", columns="MonthName", values="Return")
-    hm = hm.reindex(columns=MONTH_ORDER)  # zajišťuje leden vždy na začátku
+    hm = hm.reindex(columns=MONTH_ORDER)
     return hm
 
 
@@ -247,20 +237,17 @@ def render_seasonality(symbol, title):
 
     avg_month, raw = seasonality_monthly(symbol)
 
-    # LINE CHART
+    # Line chart
     fig = px.line(
-        avg_month,
-        x="MonthName",
-        y="Return",
-        category_orders={"MonthName": MONTH_ORDER},
+        avg_month, x="MonthName", y="Return",
         markers=True,
+        category_orders={"MonthName": MONTH_ORDER},
         title=f"{title} — Avg Monthly Seasonality (20Y)"
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # HEATMAP
+    # Heatmap
     heat = seasonality_heatmap(raw)
-
     fig2 = px.imshow(
         heat.T,
         aspect="auto",
@@ -268,7 +255,6 @@ def render_seasonality(symbol, title):
         title=f"{title} — Heatmap (20Y)"
     )
     st.plotly_chart(fig2, use_container_width=True)
-
 
 
 # ======================================================
