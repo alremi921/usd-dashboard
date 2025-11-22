@@ -1,9 +1,9 @@
-Date,Report,Category,Actual,Forecast,Previous,Impact
-2025-11-21 16:00,Existing Home Sales,Ekonomická aktivita,2,1,2,3
-2025-11-07 14:30,Nonfarm Payrolls,Trh práce,2,1,2,3
-2025-11-05 16:00,JOLTS Job Openings,Trh práce,2,1,2,3
-2025-11-01 20:00,FOMC Statement/Rate Decision,Úrokové sazby,2,1,2,3
-2025-10-31 14:30,US GDP Growth Rate (QoQ),Ekonomická aktivita,2,1,2,3
-2025-10-15 14:30,US Retail Sales MoM,Ekonomická aktivita,2,1,2,3
-2025-10-13 14:30,US CPI YoY,Inflace,2,1,2,3
-2025-10-02 16:00,ISM Manufacturing PMI,Ekonomická aktivita,2,1,2,3
+Date,Report,Category,Actual,Forecast,Previous
+2025-11-22 14:30,Míra nezaměstnanosti,Trh práce,4.0,3.9,4.1
+2025-11-15 14:30,Jádrová inflace CPI YoY,Inflace,3.4,3.5,3.3
+2025-11-01 20:00,FOMC Úroková sazba,Úrokové sazby,5.50,5.50,5.25
+2025-10-31 14:30,Růst HDP (QoQ),Ekonomická aktivita,2.8,2.5,3.1
+2025-10-06 14:30,Nonfarm Payrolls,Trh práce,250K,200K,180K
+2025-09-12 14:30,Maloobchodní tržby MoM,Ekonomická aktivita,0.5,0.2,0.8
+2025-09-01 20:00,FOMC Tisková konference,Úrokové sazby,,-1,
+2025-08-15 14:30,Index spotřebitelských cen (CPI),Inflace,3.7,3.6,3.8
