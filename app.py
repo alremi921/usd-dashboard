@@ -5,7 +5,6 @@ import requests
 import yfinance as yf
 import plotly.express as px
 from datetime import datetime
-import icalendar
 
 
 # ======================================================
